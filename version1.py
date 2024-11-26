@@ -1,6 +1,7 @@
 import cv2
 import mediapipe as mp
 import numpy as np
+import uuid
 
 # Mediapipe Hands设置，用于手部检测和关键点识别
 mp_hands = mp.solutions.hands
@@ -11,7 +12,7 @@ hands = mp_hands.Hands(static_image_mode=False, max_num_hands=5, min_detection_c
 
 # 用于区分不同手的颜色，每只手分配不同的颜色
 colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255)]
-hand_ids = {}
+hand_ids = {}  # 存储每只手的唯一ID及其颜色
 
 # 绘画用的画布设置，初始为空
 canvas = None
@@ -40,11 +41,23 @@ while cap.isOpened():
 
     # 处理检测到的手部标志点
     if results.multi_hand_landmarks:
+        detected_hands = []
         for hand_idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
-            # 为每只检测到的手分配一个唯一的标签
-            hand_label = f'hand_{hand_idx}'
+            # 为每只检测到的手分配一个唯一的ID
+            handedness = results.multi_handedness[hand_idx].classification[0].label
+            hand_label = handedness + '_' + str(hand_idx)
+            detected_hands.append(hand_label)
+
+            # 如果手的ID不存在，则创建唯一标识并分配颜色
             if hand_label not in hand_ids:
-                hand_ids[hand_label] = colors[len(hand_ids) % len(colors)]  # 给每只手分配一个颜色
+                unique_id = str(uuid.uuid4())
+                hand_ids[hand_label] = {
+                    'id': unique_id,
+                    'color': colors[len(hand_ids) % len(colors)]
+                }
+
+            # 获取该手的颜色
+            color = hand_ids[hand_label]['color']
 
             # 获取拇指指尖和食指指尖的关键点坐标
             thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
@@ -53,9 +66,6 @@ while cap.isOpened():
             # 计算画布上的坐标，以便绘制手势轨迹
             h, w, _ = frame.shape
             cx, cy = int(index_finger_tip.x * w * canvas_size_multiplier), int(index_finger_tip.y * h * canvas_size_multiplier)
-
-            # 获取该手的颜色
-            color = hand_ids[hand_label]
 
             # 计算拇指和食指指尖之间的距离，用于判断是否绘制（例如：手指合拢可以控制线条粗细）
             thumb_x, thumb_y = int(thumb_tip.x * w), int(thumb_tip.y * h)
@@ -81,6 +91,9 @@ while cap.isOpened():
             distance_text = f"{hand_label} 距离: {int(distance)}"
             text_y_position = 50 + hand_idx * 30  # 每只手的信息显示在不同的位置
             cv2.putText(frame, distance_text, (10, text_y_position), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+
+        # 清除未检测到的手的历史位置，防止手的误识别和轨迹连线问题
+        tips_previous_positions = {hand: pos for hand, pos in tips_previous_positions.items() if hand in detected_hands}
     else:
         # 如果未检测到手，则清除之前的位置，以免误绘
         tips_previous_positions.clear()
@@ -99,4 +112,3 @@ while cap.isOpened():
 # 释放视频捕捉并销毁所有窗口，清理资源
 cap.release()
 cv2.destroyAllWindows()
-
