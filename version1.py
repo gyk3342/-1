@@ -7,8 +7,8 @@ from collections import deque
 mp_hands = mp.solutions.hands
 mp_drawing = mp.solutions.drawing_utils
 
-# 初始化Mediapipe Hands，支持多个用户（最多5只手）
-hands = mp_hands.Hands(static_image_mode=False, max_num_hands=5, min_detection_confidence=0.5, min_tracking_confidence=0.5)
+# 初始化Mediapipe Hands，支持多个用户（最多5只手），提高检测和跟踪的置信度
+hands = mp_hands.Hands(static_image_mode=False, max_num_hands=5, min_detection_confidence=0.7, min_tracking_confidence=0.7)
 
 # 用于区分不同手的颜色，每只手分配不同的颜色
 colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255)]
@@ -48,16 +48,20 @@ while cap.isOpened():
         for hand_idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
             # 获取当前手的唯一ID，并根据左右手进行区分
             handedness = results.multi_handedness[hand_idx].classification[0].label
+            hand_label = f'{handedness}_{hand_idx}'
             if handedness == 'Left':
-                hand_label = f'left_{hand_idx}'
                 if hand_label not in left_hand_ids:
                     left_hand_ids[hand_label] = colors[len(left_hand_ids) % len(colors)]  # 给每只左手分配一个颜色
                 color = left_hand_ids[hand_label]
             else:
-                hand_label = f'right_{hand_idx}'
                 if hand_label not in right_hand_ids:
                     right_hand_ids[hand_label] = colors[len(right_hand_ids) % len(colors)]  # 给每只右手分配一个颜色
                 color = right_hand_ids[hand_label]
+
+            # 只处理在屏幕合理区域内的手，防止误识别边缘的手
+            palm_base = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
+            if palm_base.y > 0.95:  # 如果手腕位于帧的最底部区域，忽略该手
+                continue
 
             detected_hands.append(hand_label)
 
