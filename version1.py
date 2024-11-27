@@ -17,9 +17,20 @@ right_hand_ids = {}
 
 # 绘画用的画布设置，初始为空
 canvas = None
-canvas_size_multiplier = 2  # 画布大小是视频帧的两倍，以便绘制更精细的内容
+canvas_size_multiplier = 3  # 画布大小是视频帧的三倍，以便绘制更广泛的内容
 smoothing_queue = {}  # 用于存储每只手的轨迹，进行平滑处理
 smoothing_length = 5  # 平滑队列的长度
+
+drawing_mode = 'pen'  # 默认为画笔模式，其他选项可以是橡皮擦、矩形等
+line_thickness = 5  # 默认线条粗细
+color_index = 0  # 用于选择当前颜色
+
+def toggle_drawing_mode():
+    global drawing_mode
+    if drawing_mode == 'pen':
+        drawing_mode = 'eraser'
+    else:
+        drawing_mode = 'pen'
 
 # 初始化视频捕捉，从默认摄像头捕捉视频流
 cap = cv2.VideoCapture(0)
@@ -60,7 +71,7 @@ while cap.isOpened():
 
             # 只处理在屏幕合理区域内的手，防止误识别边缘的手
             palm_base = hand_landmarks.landmark[mp_hands.HandLandmark.WRIST]
-            if palm_base.y > 0.95:  # 如果手腕位于帧的最底部区域，忽略该手
+            if palm_base.y > 0.98:  # 如果手腕位于帧的最底部区域，忽略该手
                 continue
 
             detected_hands.append(hand_label)
@@ -82,19 +93,20 @@ while cap.isOpened():
             smoothed_cx = int(np.mean([p[0] for p in smoothing_queue[hand_label]]))
             smoothed_cy = int(np.mean([p[1] for p in smoothing_queue[hand_label]]))
 
-            # 计算拇指和食指指尖之间的距离，用于判断是否绘制（例如：手指合拢可以控制线条粗细）
+            # 切换画笔和橡皮擦
             thumb_x, thumb_y = int(thumb_tip.x * w), int(thumb_tip.y * h)
             index_x, index_y = int(index_finger_tip.x * w), int(index_finger_tip.y * h)
             distance = np.sqrt((thumb_x - index_x) ** 2 + (thumb_y - index_y) ** 2)
-
-            # 根据拇指和食指之间的距离确定线条的粗细，距离越近，线条越粗
-            line_thickness = int(1000 / (distance + 1))
-            line_thickness = np.clip(line_thickness, 1, 20)  # 限制线条粗细在1到20之间
+            if handedness == 'Right' and distance < 50:
+                toggle_drawing_mode()
 
             # 如果有之前记录的位置，则绘制线条，形成绘画效果
             if hand_label in tips_previous_positions:
                 px, py = tips_previous_positions[hand_label]
-                cv2.line(canvas, (px, py), (smoothed_cx, smoothed_cy), color, line_thickness)
+                if drawing_mode == 'pen':
+                    cv2.line(canvas, (px, py), (smoothed_cx, smoothed_cy), color, line_thickness)
+                elif drawing_mode == 'eraser':
+                    cv2.line(canvas, (px, py), (smoothed_cx, smoothed_cy), (0, 0, 0), line_thickness * 10)
 
             # 更新当前食指指尖的位置，供下一帧使用
             tips_previous_positions[hand_label] = (smoothed_cx, smoothed_cy)
