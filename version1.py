@@ -1,7 +1,7 @@
 import cv2
 import mediapipe as mp
 import numpy as np
-import uuid
+from collections import deque
 
 # Mediapipe Hands设置，用于手部检测和关键点识别
 mp_hands = mp.solutions.hands
@@ -12,11 +12,14 @@ hands = mp_hands.Hands(static_image_mode=False, max_num_hands=5, min_detection_c
 
 # 用于区分不同手的颜色，每只手分配不同的颜色
 colors = [(255, 0, 0), (0, 255, 0), (0, 0, 255), (255, 255, 0), (0, 255, 255)]
-hand_ids = {}  # 存储每只手的唯一ID及其颜色
+left_hand_ids = {}
+right_hand_ids = {}
 
 # 绘画用的画布设置，初始为空
 canvas = None
 canvas_size_multiplier = 2  # 画布大小是视频帧的两倍，以便绘制更精细的内容
+smoothing_queue = {}  # 用于存储每只手的轨迹，进行平滑处理
+smoothing_length = 5  # 平滑队列的长度
 
 # 初始化视频捕捉，从默认摄像头捕捉视频流
 cap = cv2.VideoCapture(0)
@@ -43,21 +46,20 @@ while cap.isOpened():
     if results.multi_hand_landmarks:
         detected_hands = []
         for hand_idx, hand_landmarks in enumerate(results.multi_hand_landmarks):
-            # 为每只检测到的手分配一个唯一的ID
+            # 获取当前手的唯一ID，并根据左右手进行区分
             handedness = results.multi_handedness[hand_idx].classification[0].label
-            hand_label = handedness + '_' + str(hand_idx)
+            if handedness == 'Left':
+                hand_label = f'left_{hand_idx}'
+                if hand_label not in left_hand_ids:
+                    left_hand_ids[hand_label] = colors[len(left_hand_ids) % len(colors)]  # 给每只左手分配一个颜色
+                color = left_hand_ids[hand_label]
+            else:
+                hand_label = f'right_{hand_idx}'
+                if hand_label not in right_hand_ids:
+                    right_hand_ids[hand_label] = colors[len(right_hand_ids) % len(colors)]  # 给每只右手分配一个颜色
+                color = right_hand_ids[hand_label]
+
             detected_hands.append(hand_label)
-
-            # 如果手的ID不存在，则创建唯一标识并分配颜色
-            if hand_label not in hand_ids:
-                unique_id = str(uuid.uuid4())
-                hand_ids[hand_label] = {
-                    'id': unique_id,
-                    'color': colors[len(hand_ids) % len(colors)]
-                }
-
-            # 获取该手的颜色
-            color = hand_ids[hand_label]['color']
 
             # 获取拇指指尖和食指指尖的关键点坐标
             thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
@@ -66,6 +68,15 @@ while cap.isOpened():
             # 计算画布上的坐标，以便绘制手势轨迹
             h, w, _ = frame.shape
             cx, cy = int(index_finger_tip.x * w * canvas_size_multiplier), int(index_finger_tip.y * h * canvas_size_multiplier)
+
+            # 平滑轨迹，使用队列存储最近的点
+            if hand_label not in smoothing_queue:
+                smoothing_queue[hand_label] = deque(maxlen=smoothing_length)
+            smoothing_queue[hand_label].append((cx, cy))
+
+            # 计算平滑后的坐标
+            smoothed_cx = int(np.mean([p[0] for p in smoothing_queue[hand_label]]))
+            smoothed_cy = int(np.mean([p[1] for p in smoothing_queue[hand_label]]))
 
             # 计算拇指和食指指尖之间的距离，用于判断是否绘制（例如：手指合拢可以控制线条粗细）
             thumb_x, thumb_y = int(thumb_tip.x * w), int(thumb_tip.y * h)
@@ -79,10 +90,10 @@ while cap.isOpened():
             # 如果有之前记录的位置，则绘制线条，形成绘画效果
             if hand_label in tips_previous_positions:
                 px, py = tips_previous_positions[hand_label]
-                cv2.line(canvas, (px, py), (cx, cy), color, line_thickness)
+                cv2.line(canvas, (px, py), (smoothed_cx, smoothed_cy), color, line_thickness)
 
             # 更新当前食指指尖的位置，供下一帧使用
-            tips_previous_positions[hand_label] = (cx, cy)
+            tips_previous_positions[hand_label] = (smoothed_cx, smoothed_cy)
 
             # 在帧上绘制手部的关键点和连接线，方便用户查看手部的识别情况
             mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
