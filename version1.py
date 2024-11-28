@@ -2,6 +2,8 @@ import cv2
 import mediapipe as mp
 import numpy as np
 from collections import deque
+import os
+import datetime
 
 # Mediapipe Hands设置，用于手部检测和关键点识别
 mp_hands = mp.solutions.hands
@@ -24,6 +26,12 @@ smoothing_length = 5  # 平滑队列的长度
 drawing_mode = 'pen'  # 默认为画笔模式，其他选项可以是橡皮擦、矩形等
 line_thickness = 5  # 默认线条粗细
 color_index = 0  # 用于选择当前颜色
+save_directory = "./saved_drawings"  # 保存绘画的文件夹路径
+drawing_enabled = True  # 控制是否绘画的标志
+
+# 如果保存绘画的文件夹不存在，则创建该文件夹
+if not os.path.exists(save_directory):
+    os.makedirs(save_directory)
 
 def toggle_drawing_mode():
     global drawing_mode
@@ -47,7 +55,7 @@ while cap.isOpened():
     # 如果画布尚未初始化，则根据当前帧的尺寸创建画布
     if canvas is None:
         h, w, _ = frame.shape
-        canvas = np.zeros((h * canvas_size_multiplier, w * canvas_size_multiplier, 3), dtype=np.uint8)
+        canvas = np.ones((h * canvas_size_multiplier, w * canvas_size_multiplier, 3), dtype=np.uint8) * 255
 
     # 将帧的颜色空间从BGR转换为RGB格式，以供Mediapipe使用
     rgb_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
@@ -76,9 +84,10 @@ while cap.isOpened():
 
             detected_hands.append(hand_label)
 
-            # 获取拇指指尖和食指指尖的关键点坐标
+            # 获取拇指指尖、食指指尖和中指指尖的关键点坐标
             thumb_tip = hand_landmarks.landmark[mp_hands.HandLandmark.THUMB_TIP]
             index_finger_tip = hand_landmarks.landmark[mp_hands.HandLandmark.INDEX_FINGER_TIP]
+            middle_finger_tip = hand_landmarks.landmark[mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
 
             # 计算画布上的坐标，以便绘制手势轨迹
             h, w, _ = frame.shape
@@ -93,20 +102,31 @@ while cap.isOpened():
             smoothed_cx = int(np.mean([p[0] for p in smoothing_queue[hand_label]]))
             smoothed_cy = int(np.mean([p[1] for p in smoothing_queue[hand_label]]))
 
-            # 切换画笔和橡皮擦
+            # 判断是否握拳来停止绘画，或者伸出手指来开始绘画
             thumb_x, thumb_y = int(thumb_tip.x * w), int(thumb_tip.y * h)
             index_x, index_y = int(index_finger_tip.x * w), int(index_finger_tip.y * h)
-            distance = np.sqrt((thumb_x - index_x) ** 2 + (thumb_y - index_y) ** 2)
-            if handedness == 'Right' and distance < 50:
-                toggle_drawing_mode()
+            middle_x, middle_y = int(middle_finger_tip.x * w), int(middle_finger_tip.y * h)
+            distance_thumb_index = np.sqrt((thumb_x - index_x) ** 2 + (thumb_y - index_y) ** 2)
+            distance_index_middle = np.sqrt((index_x - middle_x) ** 2 + (index_y - middle_y) ** 2)
 
-            # 如果有之前记录的位置，则绘制线条，形成绘画效果
-            if hand_label in tips_previous_positions:
+            if distance_thumb_index < 30:  # 握拳时停止绘画
+                drawing_enabled = False
+            else:  # 伸出手指时开始绘画
+                drawing_enabled = True
+
+            # 双指并拢时切换到橡皮擦模式
+            if distance_index_middle < 30:
+                drawing_mode = 'eraser'
+            else:
+                drawing_mode = 'pen'
+
+            # 如果有之前记录的位置，并且绘画功能启用，则绘制线条，形成绘画效果
+            if drawing_enabled and hand_label in tips_previous_positions:
                 px, py = tips_previous_positions[hand_label]
                 if drawing_mode == 'pen':
                     cv2.line(canvas, (px, py), (smoothed_cx, smoothed_cy), color, line_thickness)
                 elif drawing_mode == 'eraser':
-                    cv2.line(canvas, (px, py), (smoothed_cx, smoothed_cy), (0, 0, 0), line_thickness * 10)
+                    cv2.line(canvas, (px, py), (smoothed_cx, smoothed_cy), (255, 255, 255), line_thickness * 20)
 
             # 更新当前食指指尖的位置，供下一帧使用
             tips_previous_positions[hand_label] = (smoothed_cx, smoothed_cy)
@@ -115,9 +135,9 @@ while cap.isOpened():
             mp_drawing.draw_landmarks(frame, hand_landmarks, mp_hands.HAND_CONNECTIONS)
 
             # 在帧上显示拇指和食指之间的距离信息，便于用户理解当前的手势状态
-            distance_text = f"{hand_label} 距离: {int(distance)}"
+            distance_text = f"{hand_label} distance: {int(distance_thumb_index)}"
             text_y_position = 50 + hand_idx * 30  # 每只手的信息显示在不同的位置
-            cv2.putText(frame, distance_text, (10, text_y_position), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 255), 2)
+            cv2.putText(frame, distance_text, (10, text_y_position), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
         # 清除未检测到的手的历史位置，防止手的误识别和轨迹连线问题
         tips_previous_positions = {hand: pos for hand, pos in tips_previous_positions.items() if hand in detected_hands}
@@ -130,11 +150,22 @@ while cap.isOpened():
     combined_frame = cv2.addWeighted(frame, 0.5, resized_canvas, 0.5, 0)  # 将帧和画布以一定的权重进行混合，形成最终输出
 
     # 显示合并后的帧，包含原始视频和绘画内容
-    cv2.imshow('多用户手势绘画', combined_frame)
+    cv2.imshow('multi_painting', combined_frame)
 
-    # 按下'q'键退出循环
-    if cv2.waitKey(1) & 0xFF == ord('q'):
+    # 检测按键事件
+    key = cv2.waitKey(1) & 0xFF
+    if key == ord('q'):
         break
+    elif key == ord('r'):
+        # 保存当前绘画内容
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        save_path = os.path.join(save_directory, f"drawing_{timestamp}.png")
+        cv2.imwrite(save_path, canvas)
+        print(f"save: {save_path}")
+    elif key == ord('c'):
+        # 清空画布
+        canvas = np.ones((h * canvas_size_multiplier, w * canvas_size_multiplier, 3), dtype=np.uint8) * 255
+        print("clear")
 
 # 释放视频捕捉并销毁所有窗口，清理资源
 cap.release()
